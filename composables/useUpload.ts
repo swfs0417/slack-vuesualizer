@@ -1,6 +1,35 @@
 import { Sema } from 'async-sema'
 import { FetchError } from "ofetch"
 import type { Entry } from '@zip.js/zip.js'
+import { WORKSPACE_COLLECTIONS } from '~~/shared/workspaceCollections'
+
+const MAX_BATCH_BYTES = 750 * 1024
+const encoder = new TextEncoder()
+
+const splitIntoBatches = (data: any[]) => {
+  const batches: any[][] = []
+  let batch: any[] = []
+  let batchBytes = 11 // {"data":[]}
+
+  for (const entry of data) {
+    const entryBytes = encoder.encode(JSON.stringify(entry)).length
+    const separatorBytes = batch.length > 0 ? 1 : 0
+
+    if (batch.length > 0 && batchBytes + separatorBytes + entryBytes > MAX_BATCH_BYTES) {
+      batches.push(batch)
+      batch = []
+      batchBytes = 11
+    }
+
+    batch.push(entry)
+    batchBytes += (batch.length > 1 ? 1 : 0) + entryBytes
+  }
+
+  if (batch.length > 0)
+    batches.push(batch)
+
+  return batches
+}
 
 export const useUpload = () => {
   const queue = ref(new Set<string>())
@@ -25,21 +54,12 @@ export const useUpload = () => {
 
       const data = await parseData(channelEntries)
 
-      // split into groups to prevent request from being too large for Vercel to handle
-      const groups = []
-      const size = 500
-
-      for (let i = 0; i < data.length; i += size)
-        groups.push(data.slice(i, i + size))
-
-      await Promise.all(
-        groups.map(group =>
-          $fetch(`/api/import/channel/${channel}`, {
-            method: 'POST',
-            body: { data: group },
-          }),
-        ),
-      )
+      for (const batch of splitIntoBatches(data)) {
+        await $fetch(`/api/import/channel/${channel}`, {
+          method: 'POST',
+          body: { data: batch },
+        })
+      }
 
       done.value.add(channel)
     }
@@ -56,7 +76,7 @@ export const useUpload = () => {
     try {
       queue.value.add('vuesualizer-workspace')
       const workspaceEntries = entries.filter(
-        e => !e.filename.includes('/') && !e.directory,
+        e => !e.directory && WORKSPACE_COLLECTIONS.some(name => e.filename === `${name}.json`),
       )
       let data = await Promise.all(
         workspaceEntries.map(async e => ({
@@ -79,8 +99,17 @@ export const useUpload = () => {
 
       await $fetch('/api/import/workspace', {
         method: 'POST',
-        body: { data },
+        body: { data: [] },
       })
+
+      for (const dataset of data) {
+        for (const batch of splitIntoBatches(dataset.data)) {
+          await $fetch(`/api/import/workspace/${dataset.name}`, {
+            method: 'POST',
+            body: { data: batch },
+          })
+        }
+      }
 
       done.value.add('vuesualizer-workspace')
     }

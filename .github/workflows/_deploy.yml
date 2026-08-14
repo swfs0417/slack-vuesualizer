@@ -13,6 +13,8 @@ on:
     secrets:
       OCI_AUTH_TOKEN:
         required: true
+      DEPLOYER_APP_PRIVATE_KEY:
+        required: true
 
 jobs:
   deploy:
